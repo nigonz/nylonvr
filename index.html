@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Nylon · Elegí tu aventura</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Philosopher:wght@400;700&family=Space+Grotesk:wght@500;700&display=swap" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/DRACOLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/MTLLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <link rel="preload" href="assets/fonts/Black_Ops_One/BlackOpsOne-Regular.woff2" as="font" type="font/woff2" crossorigin>
+    <style>
+        @font-face { font-family: 'Black Ops One'; font-weight: 400; font-display: swap; src: url('assets/fonts/Black_Ops_One/BlackOpsOne-Regular.woff2') format('woff2'), url('assets/fonts/Black_Ops_One/BlackOpsOne-Regular.ttf') format('truetype'); }   /* fuente local: funciona sin internet */
+        html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+        canvas { display: block; position: fixed; top: 0; left: 0; }
+        #ui { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; justify-content: center; align-items: center; background: rgba(0,0,0,.5); font-family: 'Philosopher', sans-serif; color: #fff; transition: opacity 1s; }
+        #ui.hidden { opacity: 0; pointer-events: none; }
+        #ui h1 { font-weight: 300; font-size: 3rem; letter-spacing: .3em; text-align: center; margin: 0 0 2rem; text-transform: uppercase; }
+        #ui h1 span { font-size: 1.2rem; font-weight: 700; letter-spacing: .25em; }
+        #ui button { font-family: 'Space Grotesk', sans-serif; margin: .4rem; padding: 1rem 2rem; border-radius: 999px; cursor: pointer; background: rgba(255,255,255,.1); border: 1px solid rgba(255,255,255,.3); color: #fff; letter-spacing: .15em; font-size: .85rem; transition: all .3s; }
+        #ui button:hover { background: rgba(255,255,255,.2); transform: scale(1.05); }
+        #ui button:disabled { opacity: .45; cursor: default; transform: none; }
+        #vr-btn { display: none; border-color: #0ff !important; color: #0ff !important; }
+        #vback { position: fixed; z-index: 25; display: none; left: 50%; bottom: 24px; transform: translateX(-50%); padding: 1rem 1.8rem; border-radius: 999px; cursor: pointer; background: rgba(0,10,20,.65); border: 1px solid rgba(255,255,255,.5); color: #fff; font: 600 1rem 'Space Grotesk', Arial, sans-serif; letter-spacing: .12em; }
+        #dbg { display: none; position: fixed; left: 12px; top: 12px; max-width: min(92vw, 760px); white-space: pre-wrap; font: 12px/1.45 monospace; color: #ffb4a8; background: rgba(0,0,0,.72); padding: 8px 12px; border-radius: 8px; pointer-events: none; text-align: left; letter-spacing: 0; }
+        #sub { position: fixed; left: 50%; bottom: 60px; transform: translateX(-50%); z-index: 15; color: #fff; font: 600 1.4rem 'Space Grotesk', sans-serif; text-shadow: 0 0 12px #000; pointer-events: none; text-align: center; max-width: 90vw; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div style="position:fixed;left:10px;bottom:8px;font:11px Helvetica,Arial,sans-serif;opacity:.45;letter-spacing:.05em">hub · v24-oct-Q</div><div id="xrstat" style="position:fixed;left:10px;bottom:24px;font:11px Helvetica,Arial,sans-serif;opacity:.6;color:#8ff;z-index:70;pointer-events:none"></div><div id="dbg"></div><h1>Nylon</h1><div><button id="enter-btn" disabled>CARGANDO…</button><button id="vr-btn" disabled>ENTRAR EN VR</button></div></div>
+    <div id="sub"></div>
+    <button id="vback">‹ VOLVER AL HUB</button>
+    <script>
+        const smooth = (e0, e1, x) => { const t = THREE.MathUtils.clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
+        let scene, camera, renderer, rig, faseVuelo = 'idle', yaw = 0, yawFree = 0, pitchFree = 0, audio = null;
+        const camPos = new THREE.Vector3(), pointer = { x: 0, y: 0, on: false }, raycaster = new THREE.Raycaster(), _v = new THREE.Vector3(), _v2 = new THREE.Vector3(), clock = new THREE.Clock();
+        function makeSpriteTexture(hardness) {
+            const c = document.createElement('canvas'); c.width = c.height = 64; const g = c.getContext('2d'), gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+            gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(hardness, 'rgba(255,255,255,0.6)'); gr.addColorStop(1, 'rgba(255,255,255,0)'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+        }
+        function ensureAudio() { try { const tc = THREE.AudioContext.getContext(); if (tc.state === 'suspended') tc.resume(); } catch (e) {}
+            try { if (!audio) { const ctx = new (window.AudioContext || window.webkitAudioContext)(); audio = { ctx }; } if (audio.ctx.state === 'suspended') audio.ctx.resume(); } catch (e) { audio = null; } }
+        function tone(f, type, vol, dur, f2, delay = 0) {
+            if (!audio) return; const c = audio.ctx, t = c.currentTime + delay, o = c.createOscillator(), g = c.createGain();
+            o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+            g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + Math.min(1.2, dur / 3)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            o.connect(g).connect(audio.ctx.destination); o.start(t); o.stop(t + dur + 0.05);
+        }
+        function noise(dur, f0, f1, vol, delay = 0, pan = 0, type = 'bandpass', q = 0.8) {      // ruido filtrado con barrido de frecuencia (impactos, derrumbe, arena)
+            if (!audio) return; const c = audio.ctx, t = c.currentTime + delay, n = Math.max(1, (c.sampleRate * dur) | 0), b = c.createBuffer(1, n, c.sampleRate), d = b.getChannelData(0);
+            for (let i = 0; i < n; i++) d[i] = Math.random() * 2 - 1;
+            const s = c.createBufferSource(), f = c.createBiquadFilter(), g = c.createGain(), p = c.createStereoPanner ? c.createStereoPanner() : null; s.buffer = b; f.type = type; f.Q.value = q;
+            f.frequency.setValueAtTime(f0, t); f.frequency.exponentialRampToValueAtTime(Math.max(20, f1), t + dur);
+            g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol, t + Math.min(0.02, dur / 4)); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+            s.connect(f); f.connect(g); if (p) { p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p); p.connect(c.destination); } else g.connect(c.destination); s.start(t); s.stop(t + dur + 0.05);
+        }
+        function clink(f, vol, pan = 0, delay = 0) {      // golpe metálico corto (letra que rebota / choca)
+            if (!audio) return; const c = audio.ctx, t = c.currentTime + delay, g = c.createGain(), p = c.createStereoPanner ? c.createStereoPanner() : null;
+            [[f, 'triangle', 1], [f * 2.76, 'sine', 0.5]].forEach(([fr, ty, k]) => { const o = c.createOscillator(), og = c.createGain(); o.type = ty; o.frequency.value = fr; og.gain.setValueAtTime(vol * k, t); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.22); o.connect(og); og.connect(g); o.start(t); o.stop(t + 0.25); });
+            if (p) { p.pan.value = Math.max(-1, Math.min(1, pan)); g.connect(p); p.connect(c.destination); } else g.connect(c.destination);
+        }
+        function setSub(txt) { document.getElementById('sub').textContent = txt; }
+        function say(txt) { setSub(txt); try { if (!window.speechSynthesis) return; speechSynthesis.cancel(); const u = new SpeechSynthesisUtterance(txt); u.lang = 'es-AR'; u.pitch = 0.75; u.rate = 0.82; speechSynthesis.speak(u); } catch (e) {} }
+        // ================= HUB (primera vista): superficie de un mundo helado frente a un planeta con anillos; pasa una moto, suena la luciérnaga y se abren 3 portales =================
+        const MOTO_DIRS = ['assets/moto/', 'assets/Sport_Motocycle N310726/'], MOTO_NAME = 'Sport_Motocycle N310726';   // moto CON piloto: .obj + .mtl de Archibase (se prueba cada carpeta en orden)
+        const MOTO_LENGTH = 2.1, MOTO_PIVOT = 0.55, MOTO_REVERSE = { a: true, b: true };   // MOTO_PIVOT = altura del centro de la moto (los mortales giran alrededor de ahí)
+        { const q = new URLSearchParams(location.search); ['a', 'b'].forEach(k => { if (q.has('rev' + k.toUpperCase())) MOTO_REVERSE[k] = q.get('rev' + k.toUpperCase()) === '1'; }); }   // prueba rapida: index.html?revA=0 o ?revA=1 (idem revB)      // largo en metros / poné true si esa moto avanza de espaldas (a = sin piloto, b = con piloto)
+        const MOTO_DELAY = 0.9, MOTO_A_TIME = 6.5, MOTO_B_TIME = 11;   // espera inicial / pasaje de la moto sin piloto / vuelta de la moto con piloto (seg)
+const MOTO_A_Z = 13;      // por dónde pasa la moto sin piloto: 13 = a tu espalda · un número negativo (ej. -16) = por delante, para ver el salto de frente
+// SALTOS · u0 = punto del recorrido (0 a 1) donde queda el borde de la rampa · T = segundos en el aire · H = altura extra del arco (m)
+//          ramp = [largo, alto] de la rampa (m) · trick: 'roll' (tirabuzón de 360°) o 'flip' (mortal hacia atrás) · dsdu/dur = metros recorridos por unidad de u / duración total
+const JUMPS = { a: { u0: 0.38, T: 1.5, H: 4.5, ramp: [3.6, 1.7], trick: 'roll', dsdu: 140, dur: MOTO_A_TIME },
+                b: { u0: 0.215, T: 1.5, H: 3.4, ramp: [3.6, 1.7], trick: 'flip', dsdu: 9 * Math.PI * 3, dur: MOTO_B_TIME } };
+const MOTO_SHOW = 'duo';      // 'duo' = las dos motos vienen juntas de frente, saltan sus rampas y se cruzan en el aire · 'classic' = la secuencia anterior (una por detrás, otra dando vueltas)
+// DUO · v = velocidad (m/s) · ta = seg. hasta el borde de la rampa · dur = duración total · stag = la moto B sale este tiempo después · lip = borde de cada rampa [x, z] · dir = rumbo (cada moto apunta al lado opuesto)
+const DUO = { v: 19, ta: 5.8, dur: 11, stag: 0.1, lip: [[-5, -30], [5, -30]], dir: [[0.4472, 0.8944], [-0.4472, 0.8944]] };
+JUMPS.da = { u0: DUO.ta / DUO.dur, T: 1.3, H: 5.0, ramp: [4.2, 2.0], trick: 'roll', dsdu: DUO.v * DUO.dur, dur: DUO.dur };                  // izquierda → derecha, tirabuzón
+JUMPS.db = { u0: (DUO.ta + DUO.stag) / DUO.dur, T: 1.3, H: 3.0, ramp: [4.2, 2.0], trick: 'flip', dsdu: DUO.v * DUO.dur, dur: DUO.dur };   // derecha → izquierda, mortal (más bajo, así no chocan)
+const duoAt = i => u => { const J = JUMPS[i ? 'db' : 'da'], d = DUO.dir[i], s = DUO.v * DUO.dur * (u - J.u0); return [DUO.lip[i][0] + d[0] * s, DUO.lip[i][1] + d[1] * s]; }, duoA = duoAt(0), duoB = duoAt(1);
+const revUp = (J, u) => 70 * Math.sin(Math.PI * THREE.MathUtils.clamp((u - J.u0) / (J.T / J.dur), 0, 1));   // el motor se acelera en el aire
+        const DUST_COLS = [0xe0b878, 0xc9965a, 0xf0d9a8];     // polvo estelar: arena dorada, violeta, celeste
+        const HUB_PORTALS = [
+            { title: 'EXPERIENCIA WEBXR', sub: 'Viajá por el universo Nylon', col: 0x13817B, al: 0.92, href: 'nylon.html?directo=1', img: 'assets/nylon' },     // el túnel vive en su propia página,
+            { title: 'ENTRENAMIENTO CON TROSSERO', sub: 'Video en moto', col: 0xf2a90c, al: 0.91, video: 'assets/portal2.mp4', img: 'assets/millenium' },     // si tu archivo no es .mp4 cambiá la extensión acá
+            { title: 'AVENTURA EN BALSA', sub: 'Video · para familias', col: 0xC61E50, al: 0.85, video: 'assets/portal3.mp4', img: 'assets/balsa' } ];
+        window.__sg = false; window.__sgBusy = false; const __onSG = () => { window.__sg = true; if (window.__sgBusy) return; if (window.__enterVR) { window.__sgBusy = true; window.__enterVR(); } };
+        try { if (navigator.xr && navigator.xr.addEventListener) navigator.xr.addEventListener('sessiongranted', __onSG); } catch (e) {} addEventListener('sessiongranted', __onSG);      // Quest: si llegás desde otra página que estaba en VR, el navegador avisa acá y se entra a VR solo
+        const WINDOW_MODE = /[?&]ventana=1/.test(location.search); let VR_OK = false;      // ?ventana=1: solo para probar en PC sin VR
+        const VOLVER_VR = /[?&]volver=1/.test(location.search) && !WINDOW_MODE;      // volvés de Nylon (con o sin vr=1: en gafas siempre se quiere VR)
+        function coverNoVR() { const c = window.__backCover; window.__noVR = true; if (!c) return; const m = c.querySelector('#bc-msg'), bb = c.querySelector('#bc-btn'); m.style.display = 'block'; m.textContent = 'VR NO DISPONIBLE EN ESTE NAVEGADOR'; bb.textContent = 'VER EN VENTANA'; bb.style.display = 'block'; }
+        function dropBackCover() { const c = window.__backCover; if (c) { c.remove(); window.__backCover = null; } }
+        if (VOLVER_VR) {      // si el visor no te mantiene en VR solo, en vez de mostrar el hub plano se ve una pantalla negra con UN boton que te vuelve a meter en VR
+            const c = window.__backCover = document.createElement('div'); c.style.cssText = 'position:fixed;inset:0;z-index:60;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#000 radial-gradient(ellipse at 50% 55%,rgba(110,170,200,.22),rgba(0,0,0,0) 60%);color:#fff;font:700 13px Helvetica,Arial,sans-serif;letter-spacing:.35em';
+            c.innerHTML = '<div id="bc-msg">VOLVIENDO AL HUB…</div><button id="bc-btn" style="display:none;padding:1rem 2rem;border-radius:999px;cursor:pointer;background:rgba(0,255,255,.18);border:1px solid #0ff;color:#0ff;font:700 .9rem Space Grotesk,Arial,sans-serif;letter-spacing:.2em;box-shadow:0 0 22px rgba(0,255,255,.35)">VOLVER AL HUB</button>';
+            document.documentElement.appendChild(c); ['pointerdown', 'pointerup', 'pointermove', 'mousedown', 'mouseup', 'touchstart', 'touchend', 'wheel'].forEach(ev => c.addEventListener(ev, e => e.stopPropagation()));      // los clics sobre la pantalla negra no llegan al hub de abajo (antes abrían el portal 2)
+            const bb = c.querySelector('#bc-btn'); bb.onclick = e => { e.stopPropagation(); if (window.__noVR) { dropBackCover(); return; } if (window.__enterVR) window.__enterVR(); else coverNoVR(); };
+            setTimeout(() => { if (window.__backCover && !window.__noVR) { c.querySelector('#bc-msg').style.display = 'none'; bb.style.display = 'block'; } }, 2500); }
+        if (/[?&](volver|debug)=1/.test(location.search)) setInterval(() => { const e = document.getElementById('xrstat'); if (e) e.textContent = 'xr: ' + (navigator.xr ? 'si' : 'no') + ' · soporta: ' + window.__xrSup + ' · sesion: ' + (typeof renderer !== 'undefined' && renderer && renderer.xr.isPresenting ? 'si' : 'no') + ' · sessiongranted: ' + (window.__sg ? 'si' : 'no'); }, 700);      // linea de estado (sacala cuando todo ande)
+        const VOLVER = /[?&]volver=1/.test(location.search);      // llegada desde el final de la experiencia Nylon: entra solo al hub, con los portales ya en su lugar (sin motos ni intro)
+        const hub = { on: false, built: false, t: 0, state: 'wait', mt: 0, ot: 0, hover: -1, jf: {}, U: { uTime: { value: 0 } }, hidden: [], lights: [], portals: [], discs: [], dust: [], dustT: 0, orb: [], opening: false, pd: null, vid: null };
+        const hgt = (x, z) => { const r = Math.hypot(x, z); return smooth(5, 16, r) * (1.3 * Math.sin(x * 0.045 + 1) * Math.cos(z * 0.05) + 0.7 * Math.sin(x * 0.13 + z * 0.09) + 0.35 * Math.sin(z * 0.31 - x * 0.2)) - smooth(250, 450, r) * 40; };
+        const cvTex = (w, h, fn) => { const c = document.createElement('canvas'); c.width = w; c.height = h; fn(c.getContext('2d'), w, h); const t = new THREE.CanvasTexture(c); t.encoding = THREE.sRGBEncoding; return t; };
+        function motoSound(dur, panF, volF, frqF) {      // motor sintetizado: pan, volumen y régimen son curvas en el tiempo (u de 0 a 1)
+            if (!audio) return; const c = audio.ctx, t = c.currentTime, N = 64, cv = f => Float32Array.from({ length: N }, (_, i) => f(i / (N - 1)));
+            const o = c.createOscillator(), o2 = c.createOscillator(), f = c.createBiquadFilter(), g = c.createGain(), p = c.createStereoPanner ? c.createStereoPanner() : null;
+            o.type = 'sawtooth'; o2.type = 'square'; f.type = 'lowpass'; f.frequency.value = 900;
+            [o, o2].forEach((x, i) => { x.frequency.setValueCurveAtTime(cv(u => frqF(u) * (i ? 0.5 : 1)), t, dur); x.connect(f); x.start(t); x.stop(t + dur + 0.1); });
+            g.gain.setValueCurveAtTime(cv(u => Math.max(0.0001, volF(u))), t, dur); f.connect(g);
+            if (p) { p.pan.setValueCurveAtTime(cv(panF), t, dur); g.connect(p); p.connect(c.destination); } else g.connect(c.destination);
+        }
+        function fitModel(obj, inner, rev) {        // centra, escala y orienta cualquier modelo: largo = dimensión mayor, ancho = menor (sirve Y-up o Z-up)
+            obj.traverse(o => { if (o.isMesh) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => { m.side = THREE.DoubleSide; if (m.transparent && m.opacity < 0.1) { m.opacity = 1; m.transparent = false; } if (m.map) { m.map.encoding = THREE.sRGBEncoding; m.needsUpdate = true; } if (m.color && !m.map && m.color.r + m.color.g + m.color.b < 0.05) m.color.set(0x2a2a2a); }); });
+            const box = new THREE.Box3().setFromObject(obj), size = box.getSize(new THREE.Vector3()), ctr = box.getCenter(new THREE.Vector3()), sz = [size.x, size.y, size.z];
+            if (box.isEmpty() || !(sz[0] + sz[1] + sz[2] > 0)) return false;      // archivo vacío o ilegible
+            const iL = sz.indexOf(Math.max(...sz)), iW = sz.indexOf(Math.min(...sz)), iU = [0, 1, 2].find(i => i !== iL && i !== iW);
+            const ax = i => new THREE.Vector3().setComponent(i, 1), eL = ax(iL), eU = ax(iU), eW = ax(iW), B = new THREE.Matrix4().makeBasis(eL, eU, eW); if (B.determinant() < 0) eW.negate();
+            B.makeBasis(eL, eU, eW); const pv = new THREE.Group(); obj.position.copy(ctr).negate(); pv.add(obj);
+            pv.quaternion.setFromRotationMatrix(B.clone().transpose()); pv.scale.setScalar(MOTO_LENGTH / sz[iL]); pv.position.y = sz[iU] * pv.scale.x / 2;
+            if (rev) inner.rotation.y = Math.PI; inner.add(pv); return true;
+        }
+        function setHubReady() { if (hub.ready) return; hub.ready = true; const b = document.getElementById('enter-btn'); b.disabled = false; b.textContent = 'ENTRAR'; document.getElementById('vr-btn').disabled = false; }
+        function hubLog(msg) { console.warn(msg); const d = document.getElementById('dbg'); if (d) { d.textContent += (d.textContent ? '\n' : '') + msg; d.style.display = 'block'; } }   // avisos visibles en la pantalla de entrada
+        function buildRamps() {      // una rampa por salto, apoyada en el piso y orientada según el recorrido de cada moto
+            const wedge = (L, h, w) => { const sh = new THREE.Shape(); sh.moveTo(-L, 0); sh.lineTo(0, h); sh.lineTo(0, -0.6); sh.lineTo(-L, -0.6); sh.closePath(); const g = new THREE.ExtrudeGeometry(sh, { depth: w, bevelEnabled: false }); g.translate(0, 0, -w / 2); return g; };
+            const mat = new THREE.MeshStandardMaterial({ color: 0xb98a5e, roughness: 0.9, flatShading: true, side: THREE.DoubleSide }), glow = new THREE.MeshBasicMaterial({ color: 0x2ee6ff, fog: false });
+            (MOTO_SHOW === 'duo' ? [['da', duoA], ['db', duoB]] : [['a', motoAAt], ['b', motoBAt]]).forEach(([k, path]) => {
+                const J = JUMPS[k], [L, h] = J.ramp, p1 = path(J.u0), p0 = path(J.u0 - L / J.dsdu), g = new THREE.Group(); J.g0 = hgt(p1[0], p1[1]);
+                g.add(new THREE.Mesh(wedge(L, h, 2.2), mat)); const lip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 2.2), glow); lip.position.set(-0.05, h, 0); g.add(lip);
+                g.position.set(p1[0], J.g0, p1[1]); g.rotation.y = Math.atan2(-(p1[1] - p0[1]), p1[0] - p0[0]); hub.group.add(g); });
+        }
+        function buildMotos() {
+            hub.pending = 2; const motoDone = () => { if (--hub.pending <= 0) setHubReady(); }; setTimeout(setHubReady, 25000);   // si algo tarda demasiado, no se bloquea la entrada
+            if (location.protocol === 'file:') hubLog('Estás abriendo el archivo con file:// — los modelos no cargan así. Abrilo desde un servidor local (ej. npx serve, o Live Server de VS Code).');
+            const mk = () => { const root = new THREE.Group(), tum = new THREE.Group(), inner = new THREE.Group(); tum.rotation.order = 'ZXY'; tum.position.y = MOTO_PIVOT; inner.position.y = -MOTO_PIVOT; tum.add(inner); root.add(tum); root.userData.tum = tum; root.visible = false; hub.group.add(root); return [root, inner]; };
+            const [A, ia] = mk(), [B, ib] = mk(); hub.A = A; hub.B = B; hub.ia = ia; hub.ib = ib; buildRamps();
+            if (VOLVER) { setHubReady(); return; }      // al volver no pasan motos: no se leen los modelos
+            const prim = inner => { const m = new THREE.MeshStandardMaterial({ color: 0xd9531e, flatShading: true }), k = new THREE.MeshStandardMaterial({ color: 0x111111 });
+                [-0.7, 0.7].forEach(x => { const w = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.1, 8, 20), k); w.position.set(x, 0.43, 0); inner.add(w); });
+                const b = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.35, 0.3), m); b.position.set(0, 0.8, 0); inner.add(b); };
+            const mkGLTF = () => { const gl = new THREE.GLTFLoader(); if (THREE.DRACOLoader) { const dl = new THREE.DRACOLoader(); dl.setDecoderPath('https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/draco/gltf/'); gl.setDRACOLoader(dl); } return gl; };      // el .glb viene comprimido con Draco
+            if (THREE.GLTFLoader) mkGLTF().load('assets/motorcycle.glb', g => { if (!fitModel(g.scene, ia, MOTO_REVERSE.a)) { hubLog('assets/motorcycle.glb: el modelo está vacío'); prim(ia); } motoDone(); }, undefined, e => { hubLog('assets/motorcycle.glb no cargó: ' + ((e && e.message) || e)); prim(ia); motoDone(); }); else { prim(ia); motoDone(); }   // moto SIN piloto
+            if (typeof THREE.OBJLoader === 'undefined' || typeof THREE.MTLLoader === 'undefined') { hubLog('Faltan OBJLoader/MTLLoader (¿falló el CDN?)'); prim(ib); return motoDone(); }
+            const errs = [], tryDir = k => {      // moto CON piloto: se lee el .obj/.mtl con fetch para poder decir exactamente qué falla
+                if (k >= MOTO_DIRS.length) { hubLog('Moto con piloto NO cargada (se usa la de emergencia):\n' + errs.join('\n')); prim(ib); return motoDone(); }
+                const dir = MOTO_DIRS[k], url = dir + MOTO_NAME;
+                fetch(url + '.obj').then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.text(); })
+                    .then(obj => fetch(url + '.mtl').then(r => r.ok ? r.text() : null, () => null).then(mtl => {
+                        const ol = new THREE.OBJLoader(); if (mtl) { const mc = new THREE.MTLLoader().setPath(dir).parse(mtl, dir); mc.preload(); ol.setMaterials(mc); }
+                        const o = ol.parse(obj); if (!fitModel(o, ib, MOTO_REVERSE.b)) throw new Error('el modelo está vacío');
+                        console.log('Moto con piloto cargada desde ' + dir); motoDone(); }))
+                    .catch(e => { errs.push('· ' + url + '.obj → ' + ((e && e.message) || e)); tryDir(k + 1); });
+            };
+            tryDir(0);
+        }
+        // ---- SHADERS DE LOS PORTALES: imagen fija + tejido de nylon + nebulosa en el borde + estrellas · anillo de galaxia · chispas en órbita ----
+        const GLSL_NOISE = `float h21(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+            float vn(vec2 p) { vec2 i = floor(p), f = fract(p); f = f * f * (3. - 2. * f); return mix(mix(h21(i), h21(i + vec2(1., 0.)), f.x), mix(h21(i + vec2(0., 1.)), h21(i + vec2(1., 1.)), f.x), f.y); }
+            float fbm(vec2 p) { float v = 0., a = .5; for (int i = 0; i < 4; i++) { v += a * vn(p); p *= 2.03; a *= .5; } return v; }`;
+        const PORTAL_VS = `varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`;
+        const PORTAL_FS = `uniform sampler2D map; uniform float uTime, uHover, uAsp; uniform vec3 uCol; varying vec2 vUv;
+            ${GLSL_NOISE}
+            void main() {
+                vec2 p = vUv * 2. - 1.; float r = length(p), ang = atan(p.y, p.x);
+                float sw = smoothstep(.5, 1., r) * (.30 + .30 * uHover) * sin(uTime * .5 + r * 2.);                  // remolino: la imagen se curva hacia el borde
+                float cs = cos(sw), sn = sin(sw); vec2 q = mat2(cs, -sn, sn, cs) * p;
+                q += p * sin(r * 22. - uTime * 3.2) * (.004 + .010 * uHover);                                       // ondas al apuntar
+                vec2 uv = q * .5 + .5; float ta = .625;                                                             // la imagen se recorta para llenar el óvalo (5:8)
+                if (uAsp > ta) uv.x = (uv.x - .5) * (ta / uAsp) + .5; else uv.y = (uv.y - .5) * (uAsp / ta) + .5;
+                vec3 col = texture2D(map, clamp(uv, 0., 1.)).rgb;
+                vec2 wv = vUv * vec2(46., 72.); vec2 f = abs(fract(wv) - .5) * 2.;                                   // tejido de nylon: hilos finos entre celdas
+                float thread = smoothstep(.72, .98, max(f.x, f.y)), cell = mod(floor(wv.x) + floor(wv.y), 2.);
+                col *= 1. - .20 * thread - .07 * (cell > .5 ? f.x : f.y);
+                float s = fract(dot(p, vec2(.62, .78)) * .28 - uTime * .09), band = smoothstep(0., .08, s) * (1. - smoothstep(.08, .2, s));   // brillo satinado que cruza la tela
+                col += (vec3(.85, .95, 1.) * .45 + uCol * .25) * band * (.45 + .55 * (1. - thread)) * (.8 + .8 * uHover);
+                float rim = smoothstep(.62, 1., r), a2 = ang + uTime * .18 + r * 2.;                                // nebulosa que gira en el borde
+                float n = fbm(vec2(cos(a2), sin(a2)) * 2. + vec2(r * 3.5 - uTime * .3));
+                col += mix(uCol, vec3(.62, .38, 1.), n) * (n * 1.5) * rim * (.9 + .6 * uHover);
+                vec2 sg = vUv * 70.; float hh = h21(floor(sg)), star = step(.982, hh) * (.5 + .5 * sin(uTime * 3. + hh * 80.)) * (1. - smoothstep(.05, .35, length(fract(sg) - .5)));
+                col += vec3(1.) * star * (.25 + .75 * rim);                                                         // estrellas titilando
+                gl_FragColor = vec4(col * (1. + .10 * uHover), 1.);
+            }`;
+        const RING_VS = `varying vec2 vP; void main() { vP = position.xy; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`;
+        const RING_FS = `uniform float uTime, uHover; uniform vec3 uCol; varying vec2 vP;
+            ${GLSL_NOISE}
+            void main() {
+                float r = length(vP), ang = atan(vP.y, vP.x), rr = clamp((r - 1.04) / .36, 0., 1.), a2 = ang + uTime * .25;
+                float spiral = .5 + .5 * sin(ang * 3. + rr * 7. - uTime * 1.3), n = fbm(vec2(cos(a2), sin(a2)) * 1.6 + vec2(rr * 3. - uTime * .15));
+                float edge = smoothstep(0., .18, rr) * (1. - smoothstep(.45, 1., rr)), a = clamp(edge * (.18 + .55 * n + .35 * pow(spiral, 3.)) * (.55 + .6 * uHover), 0., 1.);
+                gl_FragColor = vec4(mix(uCol, vec3(.7, .45, 1.), n) + vec3(.9, .95, 1.) * pow(spiral, 8.) * .5, a);   // anillo de galaxia en espiral
+            }`;
+        const SPARK_VS = `uniform float uTime, uSize; attribute float aAng, aRad, aSeed; varying float vT;
+            void main() { float a = aAng + uTime * (.18 + .30 * aSeed); vec3 p = vec3(cos(a) * aRad * 1.25, sin(a) * aRad * 2., (aSeed - .5) * .6);
+                vec4 mv = modelViewMatrix * vec4(p, 1.); gl_Position = projectionMatrix * mv; vT = .55 + .45 * sin(uTime * 3. + aSeed * 40.); gl_PointSize = uSize * (.5 + aSeed) * vT / max(.1, -mv.z); }`;
+        const SPARK_FS = `uniform vec3 uCol; varying float vT; void main() { float d = length(gl_PointCoord - .5); gl_FragColor = vec4(mix(uCol, vec3(1.), .55), (1. - smoothstep(0., .5, d)) * vT); }`;
+        function mkVid(src) { const v = document.createElement('video'); v.src = src; v.crossOrigin = 'anonymous'; v.muted = true; v.playsInline = true; v.preload = 'auto'; return v; }      // el video recién se pide cuando el usuario apunta o elige el portal
+        function buildHub() {
+            if (hub.built) return; hub.built = true; const G = hub.group;
+            const L1 = new THREE.HemisphereLight(0xaac4ff, 0x7a5238, 0.65), L2 = new THREE.DirectionalLight(0xffd9a8, 1.15); L1.userData.keep = L2.userData.keep = true; L2.position.set(-30, 40, 20); G.add(L1, L2);
+            const gg = new THREE.PlaneGeometry(900, 900, 150, 150); gg.rotateX(-Math.PI / 2); const gp = gg.attributes.position, col = new Float32Array(gp.count * 3);
+            for (let i = 0; i < gp.count; i++) { const x = gp.getX(i), z = gp.getZ(i), h = hgt(x, z); gp.setY(i, h); const k = 0.92 + 0.07 * h + 0.06 * Math.sin(x * 0.9) * Math.cos(z * 0.7) + 0.05 * Math.sin(x * 0.021 + z * 0.017); col.set([1.0 * k, 0.9 * k, 0.72 * k], i * 3); }   // tinte arena, sin saturar a blanco
+            gg.setAttribute('color', new THREE.BufferAttribute(col, 3)); gg.computeVertexNormals();
+            const sandC = document.createElement('canvas'); sandC.width = sandC.height = 512; { const g = sandC.getContext('2d'); g.fillStyle = '#c9a063'; g.fillRect(0, 0, 512, 512);
+                for (let i = 0; i < 90; i++) { const y = Math.random() * 512, a = 0.04 + Math.random() * 0.07; g.strokeStyle = Math.random() < 0.5 ? `rgba(110,70,30,${a})` : `rgba(255,225,170,${a})`; g.lineWidth = 1 + Math.random() * 5; g.beginPath(); g.moveTo(0, y); for (let x = 0; x <= 512; x += 32) g.lineTo(x, y + Math.sin(x * 0.03 + i) * 6 + (Math.random() - 0.5) * 2); g.stroke(); }   // ondulaciones de viento (tilean)
+                const im = g.getImageData(0, 0, 512, 512), d = im.data; for (let i = 0; i < d.length; i += 4) { const nz = (Math.random() - 0.5) * 46, wr = Math.random() < 0.04 ? -38 : 0; d[i] += nz + wr; d[i + 1] += nz * 0.9 + wr; d[i + 2] += nz * 0.75 + wr; } g.putImageData(im, 0, 0);
+                for (let i = 0; i < 260; i++) { g.fillStyle = Math.random() < 0.5 ? 'rgba(90,60,30,0.35)' : 'rgba(255,240,200,0.3)'; g.fillRect(Math.random() * 512, Math.random() * 512, 1 + Math.random() * 2, 1 + Math.random() * 2); } }   // granos sueltos
+            const sandT = new THREE.CanvasTexture(sandC); sandT.wrapS = sandT.wrapT = THREE.RepeatWrapping; sandT.repeat.set(70, 70); sandT.encoding = THREE.sRGBEncoding; sandT.anisotropy = 8;
+            G.add(new THREE.Mesh(gg, new THREE.MeshStandardMaterial({ map: sandT, bumpMap: sandT, bumpScale: 1.4, vertexColors: true, roughness: 1, metalness: 0 })));
+            const sp = new Float32Array(9000); for (let i = 0; i < 3000; i++) { const u = Math.random() * 2 - 1, a = Math.random() * 6.283, r = Math.sqrt(1 - u * u); sp.set([Math.cos(a) * r * 4000, Math.abs(u) * 4000 + 20, Math.sin(a) * r * 4000], i * 3); }
+            const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(sp, 3)); G.add(new THREE.Points(sg, new THREE.PointsMaterial({ color: 0xffffff, size: 2, sizeAttenuation: false, fog: false })));
+            const pt = cvTex(512, 256, (g, w, h) => { const A = [1, 133, 113], B = [89, 2, 62], Y = [196, 167, 2]; for (let y = 0; y < h; y++) { const v = 0.5 + 0.5 * Math.sin(y * 0.09) + 0.25 * Math.sin(y * 0.31 + 2), t = Math.min(1, Math.max(0, v / 1.5)), yl = Math.max(0, Math.sin(y * 0.17 + 1)) ** 6 * 0.45, c = [0, 1, 2].map(i => (A[i] + (B[i] - A[i]) * t) * (1 - yl) + Y[i] * yl * 0.8 | 0); g.fillStyle = `rgb(${c})`; g.fillRect(0, y, w, 1); } });
+            const planet = new THREE.Mesh(new THREE.SphereGeometry(450, 48, 32), new THREE.MeshStandardMaterial({ map: pt, emissive: 0xffffff, emissiveMap: pt, emissiveIntensity: 0.35, roughness: 1, fog: false })); planet.position.set(Math.sin(-34 * Math.PI / 180) * 1800, 820, -Math.cos(-34 * Math.PI / 180) * 1800); G.add(planet);
+            const rt = cvTex(512, 512, (g, w) => { const gr = g.createRadialGradient(256, 256, 0, 256, 256, 256); [[0.6, 0], [0.64, 0.55], [0.72, 0.2], [0.76, 0.6], [0.9, 0.35], [1, 0]].forEach(([s, a]) => gr.addColorStop(s, `rgba(196,167,2,${a})`)); g.fillStyle = gr; g.fillRect(0, 0, w, w); });
+            const ring = new THREE.Mesh(new THREE.RingGeometry(560, 930, 96), new THREE.MeshBasicMaterial({ map: rt, transparent: true, side: THREE.DoubleSide, depthWrite: false, fog: false })); ring.position.copy(planet.position); ring.rotation.set(1.9, 0.2, 0.35); G.add(ring);
+            const rk = new THREE.MeshStandardMaterial({ color: 0x4a5568, flatShading: true });
+            for (let i = 0; i < 50; i++) { const a = Math.random() * 6.283, r = 22 + Math.random() * 110, m = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), rk), s = 0.4 + Math.random() * 1.8; m.position.set(Math.cos(a) * r, hgt(Math.cos(a) * r, Math.sin(a) * r) + s * 0.4, Math.sin(a) * r); m.scale.set(s, s * 0.7, s); m.rotation.set(Math.random() * 3, Math.random() * 3, 0); G.add(m); }
+            { const W = hub.weed = new THREE.Group(), wm = new THREE.MeshBasicMaterial({ color: 0x9a7440, wireframe: true, fog: false }), rm = new THREE.MeshBasicMaterial({ color: 0x6e5128, fog: false });   // bola rodante: maraña de ramas secas
+                W.add(new THREE.Mesh(new THREE.IcosahedronGeometry(1, 1), wm)); for (let k = 0; k < 7; k++) { const r = new THREE.Mesh(new THREE.TorusGeometry(0.85 + Math.random() * 0.15, 0.025, 4, 18), rm); r.rotation.set(Math.random() * 3.14, Math.random() * 3.14, 0); r.scale.set(1, 0.7 + Math.random() * 0.3, 1); W.add(r); }
+                W.scale.setScalar(5); G.add(W); hub.orb.push({ m: W, c: new THREE.Vector3(0, 0, 0), R: 85, hy: 8, y0: 42, w: 0.04, a: -1.3, rx: 0.5, ry: 0.35 }); }   // flota con los objetos raros
+            { const TXT = 'ELEGÍ TU AVENTURA', slot = 0.72, x0 = -(TXT.length - 1) * slot / 2, R = (a, b) => a + Math.random() * (b - a); hub.letters = [];
+                [...TXT].forEach((ch, i) => { if (ch === ' ') return; const cv = document.createElement('canvas'); cv.width = 128; cv.height = 160; const c = cv.getContext('2d'), FF = '104px "Black Ops One", Impact, "Arial Black", sans-serif', tx = new THREE.CanvasTexture(cv); tx.encoding = THREE.sRGBEncoding; tx.anisotropy = 4;
+                    const paint = () => { c.clearRect(0, 0, 128, 160); c.font = FF; c.textAlign = 'center'; c.textBaseline = 'middle'; c.lineJoin = 'round'; c.lineWidth = 11; c.strokeStyle = '#f4efdc'; c.strokeText(ch, 64, 88); c.fillStyle = '#0a5c75'; c.fillText(ch, 64, 88); tx.needsUpdate = true; }; paint(); document.fonts.load(FF).then(paint).catch(() => {});
+                    const m = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.88), new THREE.MeshBasicMaterial({ map: tx, transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, fog: false })); m.visible = false; G.add(m);
+                    hub.letters.push({ m, x: x0 + i * slot, z: -6.3, st: 'off', v: new THREE.Vector3(), w: new THREE.Vector3(), i }); });
+                hub.scatter = (cx, cz) => hub.letters.forEach(L => { if (L.st !== 'stand' || Math.abs(L.x - cx) > 3.1) return; const an = Math.random() * 6.283, sp = R(4, 11), sn = Math.sin(an); L.st = 'fly'; clink(900 + Math.random() * 1700, 0.04, L.x / 7, Math.random() * 0.18); L.v.set(Math.cos(an) * sp, R(7, 14), sn * sp * (sn > 0 ? 0.35 : 1)); L.w.set(R(-12, 12), R(-12, 12), R(-12, 12)); }); }   // las letras salen despedidas cuando cae un portal
+            const dtx = makeSpriteTexture(0.05); for (let i = 0; i < 160; i++) { const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: dtx, transparent: true, opacity: 0, depthWrite: false, blending: THREE.AdditiveBlending, fog: false })); s.userData.life = 99; s.userData.v = new THREE.Vector3(); s.userData.sz = 1; G.add(s); hub.dust.push(s); }
+            const moonTex = cvTex(256, 128, (g, w, h) => { g.fillStyle = '#800439'; g.fillRect(0, 0, w, h); for (let i = 0; i < 70; i++) { const x = Math.random() * w, y = Math.random() * h, r = 3 + Math.random() * 12; g.fillStyle = 'rgba(40,1,30,' + (0.25 + Math.random() * 0.3) + ')'; g.beginPath(); g.arc(x, y, r, 0, 6.283); g.fill(); g.fillStyle = 'rgba(242,242,17,.18)'; g.beginPath(); g.arc(x - r * 0.25, y - r * 0.25, r * 0.7, 0, 6.283); g.fill(); } });
+            const moon = new THREE.Mesh(new THREE.SphereGeometry(140, 40, 28), new THREE.MeshStandardMaterial({ map: moonTex, emissive: 0xffffff, emissiveMap: moonTex, emissiveIntensity: 0.3, roughness: 1, fog: false })); moon.position.set(Math.sin(150 * Math.PI / 180) * 900, 300, -Math.cos(150 * Math.PI / 180) * 900); G.add(moon); hub.orb.push({ m: moon, ry: 0.02 });   // la luna
+            const mkPlanet = (r, c1, c2, x, y, z, ringed) => { const tx = cvTex(256, 128, (g, w, h) => { for (let yy = 0; yy < h; yy++) { const v = 0.5 + 0.5 * Math.sin(yy * 0.35 + r) + 0.2 * Math.sin(yy * 0.9); g.fillStyle = 'rgb(' + [0, 1, 2].map(k => (((c1 >> (16 - 8 * k)) & 255) * (1 - v) + ((c2 >> (16 - 8 * k)) & 255) * v) | 0).join(',') + ')'; g.fillRect(0, yy, w, 1); } });
+                const p = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 24), new THREE.MeshStandardMaterial({ map: tx, emissive: 0xffffff, emissiveMap: tx, emissiveIntensity: 0.3, roughness: 1, fog: false })); p.position.set(x, y, z); G.add(p); hub.orb.push({ m: p, ry: 0.05 });
+                if (ringed) { const rg = new THREE.Mesh(new THREE.RingGeometry(r * 1.4, r * 2.2, 48), new THREE.MeshBasicMaterial({ color: 0xe8c9a0, transparent: true, opacity: 0.55, side: THREE.DoubleSide, depthWrite: false, fog: false })); rg.position.copy(p.position); rg.rotation.set(1.2, 0, 0.3); G.add(rg); } return p; };
+            const P3 = (az, d, y) => [Math.sin(az * Math.PI / 180) * d, y, -Math.cos(az * Math.PI / 180) * d];     // az: 0 = frente, 90 = derecha, 180 = atrás, -90 = izquierda
+            const pv = mkPlanet(45, 0x46014d, 0x990243, ...P3(-100, 650, 260), false); mkPlanet(30, 0xc47702, 0xc4a702, ...P3(115, 600, 200), true); mkPlanet(60, 0x01856a, 0x688501, ...P3(180, 800, 300), false);
+            const mkWorld = (r, tx, x, y, z) => { const p = new THREE.Mesh(new THREE.SphereGeometry(r, 40, 28), new THREE.MeshStandardMaterial({ map: tx, emissive: 0xffffff, emissiveMap: tx, emissiveIntensity: 0.3, roughness: 1, fog: false })); p.position.set(x, y, z); G.add(p); hub.orb.push({ m: p, ry: 0.03 }); return p; };
+            mkWorld(110, cvTex(256, 128, (g, w, h) => { g.fillStyle = '#c41202'; g.fillRect(0, 0, w, h); for (let i = 0; i < 90; i++) { g.fillStyle = Math.random() < 0.5 ? 'rgba(77,1,60,.4)' : 'rgba(196,119,2,.35)'; g.beginPath(); g.ellipse(Math.random() * w, Math.random() * h, 4 + Math.random() * 16, 3 + Math.random() * 8, 0, 0, 6.283); g.fill(); } g.fillStyle = 'rgba(255,255,255,.75)'; g.fillRect(0, 0, w, 5); g.fillRect(0, h - 4, w, 4); }), ...P3(-140, 1000, 150));    // Marte: atrás a la izquierda
+            mkWorld(260, cvTex(256, 128, (g, w, h) => { const cs = ['#c4a702', '#c47702', '#858001', '#688501', '#c1c402']; let y = 0; while (y < h) { const bh = 4 + Math.random() * 12; g.fillStyle = cs[(Math.random() * cs.length) | 0]; g.fillRect(0, y, w, bh); y += bh; } g.fillStyle = 'rgba(196,18,2,.85)'; g.beginPath(); g.ellipse(170, 84, 18, 10, 0, 0, 6.283); g.fill(); }), ...P3(80, 1400, 260));    // Júpiter: a la derecha
+            const mini = new THREE.Mesh(new THREE.SphereGeometry(8, 16, 12), new THREE.MeshStandardMaterial({ color: 0xc4a702, emissive: 0x4d3a00, fog: false })); G.add(mini); hub.orb.push({ m: mini, c: pv.position, R: 85, hy: 14, w: 0.5, a: 0 });   // lunita orbitando el planeta violeta
+            const wc = [0xc41202, 0x01857e, 0xf2f211, 0x990243, 0x688501], wg = [() => new THREE.TorusKnotGeometry(5, 1.2, 64, 8), () => new THREE.OctahedronGeometry(6), () => new THREE.IcosahedronGeometry(5, 0), () => new THREE.TorusGeometry(7, 1, 8, 24), () => new THREE.BoxGeometry(7, 7, 7)];
+            for (let i = 0; i < 14; i++) { const c = wc[i % 5], m = new THREE.Mesh(wg[i % 5](), new THREE.MeshStandardMaterial({ color: c, emissive: c, emissiveIntensity: 0.6, flatShading: true, wireframe: i % 3 === 0, fog: false })); G.add(m);   // cosas raras flotando alrededor
+                hub.orb.push({ m, c: new THREE.Vector3(0, 0, 0), R: 70 + Math.random() * 170, hy: 8 + Math.random() * 14, y0: 40 + Math.random() * 110, w: (Math.random() < 0.5 ? -1 : 1) * (0.02 + Math.random() * 0.05), a: Math.random() * 6.28, rx: Math.random() * 0.8, ry: Math.random() * 0.8 }); }
+            const labelFont = '700 64px "Space Grotesk", Helvetica, Arial, sans-serif';
+            HUB_PORTALS.forEach((P, i) => {
+                const a = (i - 1) * 0.62, px = Math.sin(a) * 7, pz = -Math.cos(a) * 7, g = new THREE.Group(), css = '#' + new THREE.Color(P.col).getHexString();
+                const uh = { value: 0 }, uCol = { value: new THREE.Color(P.col) }, uAsp = { value: 256 / 400 }, tex = cvTex(256, 400, (c, w, h) => { const gr = c.createLinearGradient(0, 0, w, h); gr.addColorStop(0, '#04202a'); gr.addColorStop(0.5, css); gr.addColorStop(1, '#021014'); c.fillStyle = gr; c.fillRect(0, 0, w, h); c.fillStyle = '#fff'; c.font = '700 54px "Space Grotesk", Arial'; c.textAlign = 'center'; c.fillText('NYLON', w / 2, h / 2 + 18); });
+                tex.encoding = THREE.LinearEncoding; const map = { value: tex };      // degradé de reserva hasta que llegue la imagen (el shader trabaja directo en colores de pantalla)
+                if (P.img) { const exts = ['.jpg', '.png', '.jpeg', '.webp', '.JPG', '.PNG'], tryLoad = k => { if (k >= exts.length) { console.warn('Falta la imagen ' + P.img + ' — se usa el degradé de reserva.'); return; } new THREE.TextureLoader().load(P.img + exts[k], t => { t.anisotropy = 4; map.value = t; uAsp.value = t.image.width / t.image.height; }, undefined, () => tryLoad(k + 1)); }; tryLoad(0); }   // prueba assets/<nombre>.jpg/.png/.jpeg/.webp
+                const disc = new THREE.Mesh(new THREE.CircleGeometry(1, 64), new THREE.ShaderMaterial({ uniforms: { map, uAsp, uHover: uh, uCol, uTime: hub.U.uTime }, vertexShader: PORTAL_VS, fragmentShader: PORTAL_FS })); disc.scale.set(1.25, 2, 1); disc.position.y = 2.05; disc.userData.i = i;
+                const ring = new THREE.Mesh(new THREE.RingGeometry(1.04, 1.4, 96, 1), new THREE.ShaderMaterial({ uniforms: { uHover: uh, uCol, uTime: hub.U.uTime }, vertexShader: RING_VS, fragmentShader: RING_FS, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide })); ring.scale.set(1.25, 2, 1); ring.position.set(0, 2.05, -0.02);
+                const NS = 70, aA = new Float32Array(NS), aR = new Float32Array(NS), aS = new Float32Array(NS); for (let k = 0; k < NS; k++) { aA[k] = Math.random() * 6.283; aR[k] = 1.08 + Math.random() * 0.42; aS[k] = Math.random(); }
+                const sparkG = new THREE.BufferGeometry(); sparkG.setAttribute('position', new THREE.BufferAttribute(new Float32Array(NS * 3), 3)); sparkG.setAttribute('aAng', new THREE.BufferAttribute(aA, 1)); sparkG.setAttribute('aRad', new THREE.BufferAttribute(aR, 1)); sparkG.setAttribute('aSeed', new THREE.BufferAttribute(aS, 1));
+                const sparks = new THREE.Points(sparkG, new THREE.ShaderMaterial({ uniforms: { uCol, uTime: hub.U.uTime, uSize: { value: 0.07 * innerHeight * Math.min(devicePixelRatio, 2) / 1.1547 } }, vertexShader: SPARK_VS, fragmentShader: SPARK_FS, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })); sparks.frustumCulled = false; sparks.position.y = 2.05;
+                const fr = new THREE.Mesh(new THREE.TorusGeometry(1, 0.06, 12, 64), new THREE.MeshBasicMaterial({ color: P.col, transparent: true, opacity: P.al, fog: false })); fr.scale.set(1.25, 2, 1); fr.position.y = 2.05;
+                const gl = new THREE.Sprite(new THREE.SpriteMaterial({ map: dtx, color: P.col, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })); gl.scale.set(7, 8.5, 1); gl.position.set(0, 2.05, -0.1);
+                g.add(gl, ring, disc, fr, sparks); g.position.set(px, hgt(px, pz), pz); g.rotation.y = -a; g.visible = false; G.add(g);
+                hub.portals.push({ g, gl, fr, disc, uh, s: 1, y0: hgt(px, pz), px, pz, landed: false }); hub.discs.push(disc);
+            });
+            
+            const ht = hub.hint = new THREE.Mesh(new THREE.PlaneGeometry(6, 0.8), new THREE.MeshBasicMaterial({ transparent: true, opacity: 0, fog: false, map: cvTex(1024, 140, (c, w, hh) => { c.fillStyle = '#fff'; c.font = '700 70px "Space Grotesk", Arial'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('SELECCIONÁ TU AVENTURA', w / 2, hh / 2); }) })); ht.position.set(0, 7.4, -8); G.add(ht);
+            
+            hub.vroot = new THREE.Group(); hub.vroot.visible = false; scene.add(hub.vroot); buildCinema();
+            window.addEventListener('pointerdown', e => { if (renderer.xr.isPresenting) return; hub.pd = { x: e.clientX, y: e.clientY, m: false }; });      // en VR solo eligen los rayos de los controles (el clic de pantalla/emulador no apunta a nada real)
+            window.addEventListener('pointermove', e => { const d = hub.pd; if (!d || (faseVuelo !== 'hub' && faseVuelo !== 'v360') || renderer.xr.isPresenting) return; if (Math.hypot(e.clientX - d.x, e.clientY - d.y) > Math.max(18, innerWidth * 0.012)) d.m = true; if (d.m) { yawFree -= (e.movementX || 0) * 0.004; pitchFree = THREE.MathUtils.clamp(pitchFree - (e.movementY || 0) * 0.004, -1.3, 1.3); } });
+            window.addEventListener('pointerup', e => { const d = hub.pd; hub.pd = null; if (!d || d.m || renderer.xr.isPresenting || (faseVuelo !== 'hub' && faseVuelo !== 'v360')) return; raycaster.setFromCamera({ x: e.clientX / innerWidth * 2 - 1, y: -(e.clientY / innerHeight) * 2 + 1 }, camera); hubPick(); });
+            window.addEventListener('keydown', e => { if (faseVuelo !== 'v360') return; if (e.key === 'Escape') hubBack(); else if (e.key === ' ') { e.preventDefault(); cinAct('play'); } else if (e.key === 'ArrowLeft') cinAct('rew'); else if (e.key === 'ArrowRight') cinAct('fwd'); cinWake(); });      // Esc volver · espacio pausa · flechas ±10 s
+        }
+                // ================= SALA DE CINE: los mp4 de los portales se ven en una pantalla curva gigante flotando en el espacio, con luz ambiental que sale del propio video =================
+        const CIN = { R: 6, H: 4.4, ARC: 1.75, N: 56 };      // R = distancia a la pantalla (m) · H = alto de un video apaisado (m) · ARC = ancho máximo en radianes (1.75 ≈ 100°) · N = segmentos de la curva
+        function cinDims(asp) { let H = asp < 1 ? 5.4 : CIN.H, arc = asp * H / CIN.R; if (arc > CIN.ARC) { arc = CIN.ARC; H = arc * CIN.R / asp; } return [H, arc]; }      // se adapta a apaisado, ultra-ancho o vertical
+        function cinFmt(s) { s = Math.max(0, Math.floor(s || 0)); return String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0'); }
+        function cinZone(uv) {      // qué botón del panel de control toca el rayo (el panel es un canvas de 1024×256)
+            const x = uv.x * 1024, y = (1 - uv.y) * 256, d = (cx, cy, r) => Math.hypot(x - cx, y - cy) < r;
+            if (y > 150) return x > 30 && x < 994 ? { z: 'bar', f: THREE.MathUtils.clamp((x - 40) / 944, 0, 1) } : null;
+            if (d(120, 84, 56)) return { z: 'rew' }; if (d(270, 84, 68)) return { z: 'play' }; if (d(420, 84, 56)) return { z: 'fwd' };
+            if (x > 790 && x < 1010 && y < 146) return { z: 'back' }; return null;
+        }
+        function cinRays(show) { [0, 1].forEach(i => { const c = renderer.xr.getController(i); if (c.children[0]) c.children[0].visible = show; }); }      // los láseres de los controles se esconden mientras mirás el video
+        function cinWake() { if (hub.cin) hub.cin.wake = 3.5; }
+        function buildCinema() {
+            const C = hub.cin = { on: false, t: 0, asp: 16 / 9, wake: 0, ui: 0, hz: null, key: '', ambT: 0, avg: new THREE.Color(0, 0, 0), tc: new THREE.Color(), tv: new THREE.Vector3(), tv2: new THREE.Vector3(), sw: false, playing: false, dirty: true, noAmb: false, hinted: false };
+            const g = C.g = new THREE.Group(); g.visible = false; hub.vroot.add(g);
+            const dot = cvTex(64, 64, (c, w, h) => { const q = c.createRadialGradient(32, 32, 0, 32, 32, 32); q.addColorStop(0, 'rgba(255,255,255,1)'); q.addColorStop(0.35, 'rgba(255,255,255,.55)'); q.addColorStop(1, 'rgba(255,255,255,0)'); c.fillStyle = q; c.fillRect(0, 0, w, h); });
+            // estrellas alrededor
+            const sp = new Float32Array(1400 * 3); for (let i = 0; i < 1400; i++) { const u = Math.random() * 2 - 1, a = Math.random() * 6.2832, s = Math.sqrt(1 - u * u); sp[i * 3] = 300 * s * Math.cos(a); sp[i * 3 + 1] = 300 * u; sp[i * 3 + 2] = 300 * s * Math.sin(a); }
+            const sg = new THREE.BufferGeometry(); sg.setAttribute('position', new THREE.BufferAttribute(sp, 3));
+            C.stars = new THREE.Points(sg, new THREE.PointsMaterial({ size: 1.3, map: dot, color: 0xcfe6ff, transparent: true, opacity: 0, depthWrite: false, fog: false })); C.stars.frustumCulled = false; g.add(C.stars);
+            // luz ambiental (tipo Ambilight): una miniatura de 16×9 del video que se estira y se desvanece alrededor de la pantalla
+            const ac = C.ac = document.createElement('canvas'); ac.width = 16; ac.height = 9; C.actx = ac.getContext('2d', { willReadFrequently: true }); C.actx.fillStyle = '#000'; C.actx.fillRect(0, 0, 16, 9);
+            const at = C.atex = new THREE.CanvasTexture(ac); at.minFilter = at.magFilter = THREE.LinearFilter; at.generateMipmaps = false;
+            C.glow = new THREE.Mesh(new THREE.SphereGeometry(280, 32, 20), new THREE.ShaderMaterial({
+                uniforms: { tex: { value: at }, uArc: { value: 1.4 }, uAng: { value: 0.7 }, uA: { value: 0 } },
+                vertexShader: `varying vec3 vD; void main() { vD = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.); }`,
+                fragmentShader: `uniform sampler2D tex; uniform float uArc, uAng, uA; varying vec3 vD;
+                    void main() { vec3 d = normalize(vD); float az = atan(d.x, -d.z), el = asin(clamp(d.y, -1., 1.)); vec2 uv = vec2(az / uArc + .5, el / uAng + .5);
+                        float dd = length(max(abs(uv - .5) - .5, 0.) * vec2(uArc, uAng)); vec3 c = texture2D(tex, clamp(uv, .03, .97)).rgb; gl_FragColor = vec4(c * exp(-dd * 2.6) * uA * .85, 1.); }`,
+                side: THREE.BackSide, transparent: true, blending: THREE.AdditiveBlending, depthTest: false, depthWrite: false })); C.glow.renderOrder = 1; g.add(C.glow);
+            // pozo de luz en el piso, del color del video
+            const pool = C.pool = new THREE.Mesh(new THREE.CircleGeometry(9, 40), new THREE.MeshBasicMaterial({ map: dot, color: 0x000000, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })); pool.rotation.x = -Math.PI / 2; pool.renderOrder = 2; g.add(pool);
+            // pantalla curva (cilindro): se reconstruye en cinShape para la animación de apertura y para cada relación de aspecto
+            const N = CIN.N, pos = new Float32Array((N + 1) * 6), uv = new Float32Array((N + 1) * 4), idx = [];
+            for (let i = 0; i <= N; i++) { uv.set([i / N, 0, i / N, 1], i * 4); if (i < N) { const a = i * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); } }
+            const sgeo = C.geo = new THREE.BufferGeometry(); sgeo.setAttribute('position', new THREE.BufferAttribute(pos, 3)); sgeo.setAttribute('uv', new THREE.BufferAttribute(uv, 2)); sgeo.setIndex(idx);
+            C.screen = new THREE.Mesh(sgeo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0, fog: false, toneMapped: false })); C.screen.frustumCulled = false; C.screen.renderOrder = 3; C.screen.position.y = -0.15; g.add(C.screen);
+            C.poster = new THREE.Mesh(sgeo, new THREE.MeshBasicMaterial({ side: THREE.DoubleSide, transparent: true, opacity: 0, fog: false, toneMapped: false, depthWrite: false })); C.poster.frustumCulled = false; C.poster.renderOrder = 3.5; C.poster.scale.set(0.995, 1, 0.995); C.poster.position.y = -0.15; C.poster.visible = false; g.add(C.poster);      // la imagen del portal tapa la pantalla mientras el video carga
+            // anillo de carga (en VR no se ve el DOM, así que "Cargando video…" va dentro de la escena)
+            C.load = new THREE.Mesh(new THREE.RingGeometry(0.22, 0.27, 40, 1, 0, Math.PI * 1.5), new THREE.MeshBasicMaterial({ color: 0x78e6ff, side: THREE.DoubleSide, transparent: true, depthTest: false, fog: false })); C.load.position.set(0, -0.15, -(CIN.R - 0.3)); C.load.renderOrder = 4; C.load.visible = false; g.add(C.load);
+            // panel de control: −10 s · play/pausa · +10 s · tiempo · VOLVER · barra para saltar a cualquier punto
+            const cc = C.cc = document.createElement('canvas'); cc.width = 1024; cc.height = 256; C.cx = cc.getContext('2d'); const ct = C.ctex = new THREE.CanvasTexture(cc); ct.encoding = THREE.sRGBEncoding;
+            C.ctl = new THREE.Mesh(new THREE.PlaneGeometry(2, 0.5), new THREE.MeshBasicMaterial({ map: ct, transparent: true, opacity: 0, depthTest: false, fog: false })); C.ctl.renderOrder = 20; C.ctl.position.set(0, -0.85, -2.4); C.ctl.rotation.x = -Math.atan(0.85 / 2.4); C.ctl.visible = false; g.add(C.ctl);
+            // cortina negra para entrar y salir del cine sin corte brusco
+            C.curtain = new THREE.Mesh(new THREE.SphereGeometry(8, 16, 12), new THREE.MeshBasicMaterial({ color: 0x000000, side: THREE.BackSide, transparent: true, opacity: 0, depthTest: false, depthWrite: false, fog: false })); C.curtain.renderOrder = 999; C.curtain.visible = false; hub.vroot.add(C.curtain);
+        }
+        function cinShape(C, r) {      // r: 0 → 1 apertura (primero se abre a lo ancho como una línea de luz y después a lo alto)
+            const [H, arc] = cinDims(C.asp), kx = smooth(0, 0.55, r), ky = smooth(0.3, 1, r), a = arc * (0.04 + 0.96 * kx), h = H * (0.015 + 0.985 * ky), p = C.geo.attributes.position.array, N = CIN.N;
+            for (let i = 0; i <= N; i++) { const q = (i / N - 0.5) * a, x = CIN.R * Math.sin(q), z = -CIN.R * Math.cos(q); p.set([x, -h / 2, z, x, h / 2, z], i * 6); }
+            C.geo.attributes.position.needsUpdate = true; C.screen.material.opacity = smooth(0, 0.12, r);
+            const u = C.glow.material.uniforms; u.uArc.value = arc; u.uAng.value = 2 * Math.atan(H / 2 / CIN.R);
+        }
+        function cinDraw(C, v) {
+            const c = C.cx, W = 1024, H = 256, cur = v.currentTime || 0, dur = isFinite(v.duration) ? v.duration : 0, hz = C.hz;
+            c.clearRect(0, 0, W, H); const x = 6, y = 6, w = W - 12, h = H - 12, R = 44;
+            c.beginPath(); c.moveTo(x + R, y); c.lineTo(x + w - R, y); c.arc(x + w - R, y + R, R, -Math.PI / 2, 0); c.lineTo(x + w, y + h - R); c.arc(x + w - R, y + h - R, R, 0, Math.PI / 2); c.lineTo(x + R, y + h); c.arc(x + R, y + h - R, R, Math.PI / 2, Math.PI); c.lineTo(x, y + R); c.arc(x + R, y + R, R, Math.PI, Math.PI * 1.5); c.closePath();
+            const g = c.createLinearGradient(0, 0, 0, H); g.addColorStop(0, 'rgba(24,40,56,.92)'); g.addColorStop(1, 'rgba(6,12,20,.92)'); c.fillStyle = g; c.fill(); c.lineWidth = 3; c.strokeStyle = 'rgba(120,230,255,.85)'; c.stroke();
+            const btn = (cx, cy, r, on) => { c.beginPath(); c.arc(cx, cy, r, 0, 6.2832); c.fillStyle = on ? 'rgba(120,230,255,.38)' : 'rgba(255,255,255,.08)'; c.fill(); c.lineWidth = 2.5; c.strokeStyle = on ? '#8cecff' : 'rgba(255,255,255,.45)'; c.stroke(); };
+            btn(120, 84, 46, hz === 'rew'); btn(270, 84, 58, hz === 'play'); btn(420, 84, 46, hz === 'fwd'); c.fillStyle = '#fff';
+            if (!v.paused) { c.fillRect(255, 58, 12, 52); c.fillRect(276, 58, 12, 52); } else { c.beginPath(); c.moveTo(260, 56); c.lineTo(260, 112); c.lineTo(296, 84); c.closePath(); c.fill(); }
+            const tri = (tx, dir) => { c.beginPath(); c.moveTo(tx, 72); c.lineTo(tx - dir * 20, 59); c.lineTo(tx - dir * 20, 85); c.closePath(); c.fill(); };      // punta en tx, base 20px hacia atrás
+            tri(98, -1); tri(120, -1); tri(442, 1); tri(420, 1); c.font = '700 24px \"Space Grotesk\", Arial'; c.textAlign = 'center'; c.textBaseline = 'middle'; c.fillText('10', 120, 110); c.fillText('10', 420, 110);
+            c.textAlign = 'left'; c.font = '600 34px \"Space Grotesk\", Arial'; c.fillStyle = 'rgba(255,255,255,.92)'; c.fillText(C.playing ? cinFmt(cur) + ' / ' + cinFmt(dur) : (dur ? 'Cargando ' + Math.round(cinBuf(v) * 100) + '%' : 'Cargando…'), 500, 86);
+            const bx = 800, by = 36, bw = 204, bh = 100; c.beginPath(); c.arc(bx + bh / 2, by + bh / 2, bh / 2, Math.PI / 2, Math.PI * 1.5); c.arc(bx + bw - bh / 2, by + bh / 2, bh / 2, -Math.PI / 2, Math.PI / 2); c.closePath(); c.fillStyle = hz === 'back' ? 'rgba(120,230,255,.38)' : 'rgba(255,255,255,.08)'; c.fill(); c.lineWidth = 2.5; c.strokeStyle = hz === 'back' ? '#8cecff' : 'rgba(255,255,255,.45)'; c.stroke();
+            c.fillStyle = '#fff'; c.font = '700 30px \"Space Grotesk\", Arial'; c.textAlign = 'center'; try { c.letterSpacing = '2px'; } catch (e) {} c.fillText('‹ VOLVER', bx + bw / 2, by + bh / 2 + 2); try { c.letterSpacing = '0px'; } catch (e) {}
+            const f = dur ? THREE.MathUtils.clamp(cur / dur, 0, 1) : 0; c.fillStyle = 'rgba(255,255,255,.18)'; c.fillRect(40, 188, 944, hz === 'bar' ? 22 : 16);
+            c.fillStyle = 'rgba(255,255,255,.35)'; c.fillRect(40, 188, 944 * cinBuf(v), hz === 'bar' ? 22 : 16); const pg = c.createLinearGradient(40, 0, 984, 0); pg.addColorStop(0, '#78e6ff'); pg.addColorStop(1, '#ffd9a8'); c.fillStyle = pg; c.fillRect(40, 188, 944 * f, hz === 'bar' ? 22 : 16); c.beginPath(); c.arc(40 + 944 * f, hz === 'bar' ? 199 : 196, hz === 'bar' ? 17 : 13, 0, 6.2832); c.fillStyle = '#fff'; c.fill();
+            C.ctex.needsUpdate = true;
+        }
+        function cinBuf(v) { const d = v.duration; if (!isFinite(d) || !d) return 0; let e = 0; for (let i = 0; i < v.buffered.length; i++) if (v.buffered.start(i) <= v.currentTime + 0.5) e = Math.max(e, v.buffered.end(i)); return Math.min(1, e / d); }      // fracción del video ya descargada
+        function cinAct(z, f) {
+            const v = hub.vid; if (!v) return; const d = isFinite(v.duration) ? v.duration : 0;
+            if (z === 'back') { hubBack(); return; }
+            if (z === 'play') { if (v.paused) v.play().catch(() => {}); else v.pause(); } else if (z === 'rew') v.currentTime = Math.max(0, v.currentTime - 10); else if (z === 'fwd') v.currentTime = Math.min(Math.max(0, d - 0.3), v.currentTime + 10); else if (z === 'bar' && d) v.currentTime = f * d;
+            tone(1100, 'sine', 0.02, 0.12, 1100); cinWake(); if (hub.cin) hub.cin.key = '';
+        }
+        function cinPick() { const C = hub.cin; cinWake(); if (!C || C.ui < 0.3) return; const h = raycaster.intersectObject(C.ctl)[0]; if (!h || !h.uv) return; const z = cinZone(h.uv); if (z) cinAct(z.z, z.f); }      // el primer toque solo despierta el panel; el siguiente actúa
+        function cinOpen(v, vt, pimg) {
+            const C = hub.cin, vr = renderer.xr.isPresenting, hy = camera.position.y, real = vr && hy > 0.5, eyeH = vr ? (real ? THREE.MathUtils.clamp(hy, 0.8, 2) : 1.6) : 1.7, floorY = vr ? (real ? 0 : -1.6) : -1.7, eyeY = floorY + eyeH;
+            let yaw0 = 0; if (vr) { camera.getWorldDirection(C.tv); yaw0 = Math.atan2(-C.tv.x, -C.tv.z); }      // la pantalla aparece justo donde estás mirando (a la altura real de tus ojos)
+            hub.vroot.position.copy(rig.position); C.g.position.set(0, eyeY, 0); C.g.rotation.set(0, yaw0, 0); C.pool.position.set(0, floorY - eyeY + 0.01, -3.5);
+            C.screen.material.map = vt; C.screen.material.needsUpdate = true; C.asp = 16 / 9;
+            C.pimg = pimg && pimg.width ? pimg : null; C.pa = 1; if (C.pimg) { if (C.pimgSrc !== C.pimg) { C.pimgSrc = C.pimg; if (C.ptex) C.ptex.dispose(); C.ptex = new THREE.Texture(C.pimg); C.ptex.encoding = THREE.sRGBEncoding; C.ptex.needsUpdate = true; } C.poster.material.map = C.ptex; C.poster.material.needsUpdate = true; }
+            const meta = () => { C.asp = (v.videoWidth / v.videoHeight) || 16 / 9; C.dirty = true; }; if (v.readyState >= 1) meta(); else v.onloadedmetadata = meta;
+            Object.assign(C, { on: true, t: 0, sw: false, playing: false, ui: 0, wake: 0, key: '', hinted: false, dirty: true, hz: null, ambT: 0 }); C.avg.setRGB(0, 0, 0); C.screen.material.opacity = 0; C.stars.material.opacity = 0; C.glow.material.uniforms.uA.value = 0; C.pool.material.opacity = 0; C.ctl.material.opacity = 0; C.ctl.visible = false; C.curtain.material.opacity = 0; C.g.visible = false;
+            hub.vroot.visible = true;
+        }
+        function cinClose() { const C = hub.cin; if (C) { C.on = false; C.g.visible = false; C.curtain.material.opacity = 0; C.curtain.visible = false; } try { cinRays(true); } catch (e) {} document.body.style.cursor = 'default'; }
+        function cinUpdate(dt) {
+            const C = hub.cin, v = hub.vid; if (!C || !C.on || !v) return; const t = C.t += dt, cm = C.curtain.material;
+            if (t < 0.4) cm.opacity = smooth(0, 0.4, t);      // 1) el hub se va a negro
+            else { if (!C.sw) { C.sw = true; hub.group.visible = false; C.g.visible = true; v.muted = false; v.play().catch(() => { v.muted = true; v.play().catch(() => {}); }); } cm.opacity = 1 - smooth(0.4, 1.1, t); }      // 2) aparece el cine y arranca el video
+            C.curtain.visible = cm.opacity > 0.002;
+            const r = THREE.MathUtils.clamp((t - 0.8) / 1.8, 0, 1); if (C.dirty || r < 1) { cinShape(C, r); C.dirty = false; }      // 3) la pantalla se despliega
+            if (C.pimg) { const ia = C.pimg.width / C.pimg.height, z = 1 + 0.07 * Math.min(t / 25, 1); let rx = 1, ry = 1; if (ia > C.asp) rx = C.asp / ia; else ry = ia / C.asp; rx /= z; ry /= z; C.ptex.repeat.set(rx, ry); C.ptex.offset.set((1 - rx) / 2, (1 - ry) / 2); C.pa += ((C.playing ? 0 : 1) - C.pa) * Math.min(1, dt * 3.5); C.poster.visible = C.pa > 0.01; C.poster.material.opacity = C.pa * C.screen.material.opacity; C.poster.material.color.setScalar(0.78 + 0.08 * Math.sin(t * 2.2)); } else C.poster.visible = false;      // zoom lento + pulso mientras carga; cuando el video arranca se funde
+            const fa = smooth(0.6, 1.8, t); C.stars.material.opacity = fa; C.glow.material.uniforms.uA.value = C.noAmb ? 0 : fa; C.pool.material.opacity = 0.8 * fa;
+            C.load.visible = C.sw && !C.playing && t > 0.9; if (C.load.visible) C.load.rotation.z -= dt * 4;
+            if (C.sw && !C.noAmb && (C.ambT -= dt) <= 0) { C.ambT = 0.1; try { const asrc = C.playing ? v : C.pimg; if (asrc && (!C.playing || v.readyState >= 2)) { C.actx.drawImage(asrc, 0, 0, 16, 9); C.atex.needsUpdate = true; const d = C.actx.getImageData(0, 0, 16, 9).data; let rr = 0, gg = 0, bb = 0; for (let i = 0; i < d.length; i += 4) { rr += d[i]; gg += d[i + 1]; bb += d[i + 2]; } const n = d.length / 4 * 255; C.avg.lerp(C.tc.setRGB(rr / n, gg / n, bb / n), 0.25); C.pool.material.color.copy(C.avg).multiplyScalar(0.9); } } catch (e) { C.noAmb = true; } }      // si el navegador no deja leer el video, solo se apaga la luz ambiental
+            if (t > 1.6 && !C.hinted) { C.hinted = true; C.wake = 4; }      // el panel aparece unos segundos para que se vea que existe
+            C.wake -= dt; C.ui += (((C.wake > 0 || v.paused || !C.playing) && t > 1.4 ? 1 : 0) - C.ui) * Math.min(1, dt * 6);
+            let hz = null, hit = false; const probe = () => { const h = raycaster.intersectObject(C.ctl)[0]; if (h && h.uv) { hit = true; if (!hz) hz = cinZone(h.uv); } };
+            if (renderer.xr.isPresenting) [0, 1].forEach(i => { const c = renderer.xr.getController(i); C.tv.setFromMatrixPosition(c.matrixWorld); C.tv2.set(0, 0, -1).transformDirection(c.matrixWorld); raycaster.set(C.tv, C.tv2); probe(); });
+            else if (pointer.on) { raycaster.setFromCamera(pointer, camera); probe(); if (pointer.x !== C.px || pointer.y !== C.py) { C.px = pointer.x; C.py = pointer.y; C.wake = Math.max(C.wake, 3); } }
+            if (hit) C.wake = Math.max(C.wake, 2.5);      // apuntar al lugar del panel lo despierta
+            C.hz = C.ui > 0.3 && hz ? hz.z : null; if (!renderer.xr.isPresenting) document.body.style.cursor = C.hz ? 'pointer' : 'default';
+            C.ctl.material.opacity = C.ui; C.ctl.visible = C.ui > 0.01; cinRays(C.ui > 0.4 || t < 0.4);
+            if (C.ui > 0.01) { const key = Math.floor(v.currentTime * 2) + '|' + Math.floor(cinBuf(v) * 100) + '|' + C.playing + '|' + v.paused + '|' + C.hz + '|' + Math.floor(v.duration || 0); if (key !== C.key) { C.key = key; cinDraw(C, v); } }
+        }
+        function hubPick() {             // el raycaster ya está apuntado (mouse o control de VR)
+            if (faseVuelo === 'v360') { cinPick(); return; }
+            if (!(hub.opening && hub.ot > 3.4)) return;
+            const h = raycaster.intersectObjects(hub.discs)[0]; if (h) hubChoose(h.object.userData.i);
+        }
+        function hubSelectRay(c) { _v.setFromMatrixPosition(c.matrixWorld); _v2.set(0, 0, -1).transformDirection(c.matrixWorld); raycaster.set(_v, _v2); hubPick(); }
+        function enterHub() {
+            if (hub.on) { camPos.set(0, renderer.xr.isPresenting ? 0 : 1.7, 0); return; } ensureAudio(); buildHub(); hub.on = true; hub.t = 0; hub.state = 'wait'; hub.ot = 0; hub.opening = false; hub.group.visible = true; hub.A.visible = hub.B.visible = false; hub.portals.forEach(p => { p.g.visible = false; });
+            faseVuelo = 'hub'; yaw = yawFree = pitchFree = 0; camPos.set(0, renderer.xr.isPresenting ? 0 : 1.7, 0); document.getElementById('ui').classList.add('hidden'); document.body.style.cursor = 'default';
+            if (VOLVER) { const t0 = tone, n0 = noise, c0 = clink; tone = noise = clink = () => {}; try { hub.state = 'done'; openPortals(); for (let i = 0; i < 230; i++) updateHub(1 / 30); } finally { tone = t0; noise = n0; clink = c0; } }      // adelanta ~7 s en silencio: portales caídos y asentados, letras tiradas, polvo ya apagado
+        }
+        function exitHub() {           // al salir de VR se vuelve a la pantalla de entrada
+            if (hub.vid) { hub.vid.pause(); hub.vid.muted = true; } document.getElementById('vback').style.display = 'none'; hub.on = false; faseVuelo = 'idle'; if (hub.group) hub.group.visible = false; if (hub.vroot) hub.vroot.visible = false; cinClose();
+            document.getElementById('ui').classList.remove('hidden'); document.body.style.cursor = 'default';
+        }
+        function hubChoose(i) {
+            const P = HUB_PORTALS[i]; tone(300, 'sine', 0.06, 1.2, 1200); tone(1318, 'sine', 0.03, 1.5, 1400, 0.1);
+            if (P.href) { const href = P.href + (renderer.xr.isPresenting ? '&vr=1' : '') + (WINDOW_MODE ? '&ventana=1' : ''); setTimeout(() => { location.href = href; }, 450); return; }      // si estás en VR no se cierra la sesión: en Quest la página siguiente te mantiene en VR
+            const v = hub.vid = P.v || (P.v = mkVid(P.video)); setSub('Cargando video…');
+            const vt = P.vt || (P.vt = new THREE.VideoTexture(v)); vt.encoding = THREE.sRGBEncoding; v.onplaying = () => { setSub(''); if (hub.cin) hub.cin.playing = true; };
+            let pim = null; try { pim = hub.discs[i].material.uniforms.map.value.image; } catch (e) {}
+            cinOpen(v, vt, pim);      // todos los portales con video usan la sala de cine (mp4 común, sin 360°)
+            v.muted = true; v.loop = false; v.currentTime = 0; v.onended = hubBack; faseVuelo = 'v360'; yawFree = yaw = 0; pitchFree = 0;      // el video arranca cuando la cortina negra ya tapó el hub (ver cinUpdate)
+            v.onerror = () => { setSub('No se encontró el video ' + P.video); setTimeout(() => setSub(''), 4000); hubBack(); };
+        }
+        function hubBack() {
+            const v = hub.vid; if (v) { v.pause(); v.onended = v.onerror = null; v.muted = true; v.currentTime = Math.min(2, (v.duration || 6) / 3); }
+            document.getElementById('vback').style.display = 'none'; cinClose(); hub.vroot.visible = false; hub.group.visible = true; faseVuelo = 'hub'; yawFree = yaw = 0; pitchFree = 0;
+        }
+        const motoBAt = u => { const r = 9 + 45 * (1 - smooth(0, 0.18, u)) + 45 * smooth(0.82, 1, u), th = 0.6 + Math.PI * 2 * 1.5 * u; return [r * Math.sin(th), r * Math.cos(th), r, th]; };   // la moto con piloto entra, da vuelta y media alrededor del usuario y se aleja
+        const motoAAt = u => [70 - 140 * u, MOTO_A_Z + Math.sin(u * 9) * 1.2];      // la moto sin piloto cruza de lado a lado
+        function jumpAt(J, u) {      // fase del salto en el instante u: 0 = subiendo la rampa · 1 = en el aire · 2 = aterrizando · null = sin salto
+            const [L, h] = J.ramp, P0 = Math.atan2(h, L), uR = L / J.dsdu, jp = (u - J.u0) / (J.T / J.dur), s = 1 + (u - J.u0) / uR, TAU = Math.PI * 2;
+            if (s < 0 || jp > 1.8) return null;
+            if (jp <= 0) return { ph: 0, s, pitch: P0 * smooth(0, 0.3, s), roll: 0, lf: 1 - smooth(0.2, 0.9, s) };
+            if (jp <= 1) { const e = smooth(0.1, 0.9, jp); return { ph: 1, jp, pitch: P0 * (1 - 2 * jp) + (J.trick === 'flip' ? TAU * e : 0), roll: J.trick === 'roll' ? TAU * e : 0, lf: 0, air: true }; }
+            const tA = (jp - 1) * J.T; return { ph: 2, pitch: -P0 * Math.exp(-tA * 8), roll: 0, lf: smooth(0, 0.4, tA) };
+        }
+        function poseMoto(M, k, u, p, q, lean) {      // apoya la moto en el terreno, la orienta según el recorrido y le aplica rampa, salto y truco
+            const J = JUMPS[k], g = hgt(p[0], p[1]), j = jumpAt(J, u), dx = q[0] - p[0], dz = q[1] - p[1]; let y = g, pitch = 0, roll = 0, lf = 1;
+            if (j) { pitch = j.pitch; roll = j.roll; lf = j.lf;
+                if (j.ph === 0) y = g + (J.g0 + J.ramp[1] * j.s - g) * smooth(0, 0.2, j.s);
+                else { if (j.ph === 1) y = (J.g0 + J.ramp[1]) * (1 - j.jp) + g * j.jp + 4 * J.H * j.jp * (1 - j.jp);
+                    y += Math.max(0, -0.7 * Math.sin(pitch) - 0.55 * (1 - Math.cos(pitch))) * (j.ph === 1 ? smooth(0.85, 1, j.jp) : 1); } }      // al caer de trompa la rueda no se hunde en el piso
+            M.position.set(p[0], y, p[1]); M.rotation.set(0, Math.atan2(-dz, dx), 0); if (lean) M.rotateX(lean * lf); M.userData.tum.rotation.set(roll, 0, pitch);
+            return j;
+        }
+        function jumpFx(k, j, x, z) {      // polvo al despegar y al aterrizar
+            if (!j) return; const f = hub.jf[k] || (hub.jf[k] = {});
+            if (j.ph === 1 && !f.t) { f.t = 1; puff(x, hgt(x, z), z, 16); } if (j.ph === 2 && !f.l) { f.l = 1; puff(x, hgt(x, z), z, 45); }
+        }
+        function puff(x, y, z, n) {     // polvo estelar
+            for (let i = 0; i < n; i++) { const d = hub.dust.find(q => q.userData.life > 2.2); if (!d) return; d.material.color.setHex(DUST_COLS[(Math.random() * 3) | 0]); d.position.set(x + (Math.random() - 0.5) * 0.6, y + 0.2, z + (Math.random() - 0.5) * 0.6);
+                d.userData.v.set((Math.random() - 0.5) * 1.6, 0.6 + Math.random() * 1.2, (Math.random() - 0.5) * 1.6); d.userData.life = 0; d.userData.sz = 0.8 + Math.random() * 1.6; }
+        }
+        function openPortals() { HUB_PORTALS.forEach(P => { if (P.video && !P.v) P.v = mkVid(P.video); }); hub.opening = true; hub.ot = 0; [1046, 1568, 2093].forEach((f, i) => tone(f, 'sine', 0.03, 3, f * 1.01, i * 0.4)); hub.letters.forEach(L => { L.st = 'stand'; L.m.visible = true; L.m.scale.setScalar(0.001); L.m.rotation.set(0, 0, 0); }); }   // suena la luciérnaga y se abren los portales
+        function updateHub(dt) {
+            if (faseVuelo === 'v360') { cinUpdate(dt); return; }
+            if (faseVuelo !== 'hub') return;
+            hub.t += dt; const t = hub.t, A = hub.A, B = hub.B, cl = THREE.MathUtils.clamp;
+            hub.orb.forEach(o => { if (o.R) { o.a += dt * o.w; const c = o.c; o.m.position.set(c.x + Math.cos(o.a) * o.R, (o.y0 !== undefined ? o.y0 : c.y) + Math.sin(o.a * 2) * o.hy, c.z + Math.sin(o.a) * o.R); } o.m.rotation.x += dt * (o.rx || 0); o.m.rotation.y += dt * (o.ry || 0.1); });   // planetas y objetos raros orbitando
+            if (hub.state === 'wait' && t > MOTO_DELAY && MOTO_SHOW === 'duo') {      // las dos motos vienen juntas desde lejos, saltan las rampas y se cruzan en el aire
+                hub.state = 'duo'; hub.mt = 0; hub.jf = {}; A.visible = B.visible = true;
+                [[duoA, 'da'], [duoB, 'db']].forEach(([f, k]) => motoSound(DUO.dur, u => cl(f(u)[0] / 30, -1, 1), u => 0.003 + 0.11 * Math.pow(cl(1 - Math.hypot(...f(u)) / 140, 0, 1), 1.6), u => 95 + 50 * smooth(0, 0.5, u) + revUp(JUMPS[k], u)));
+            }
+            if (hub.state === 'duo') {
+                hub.mt += dt; const u = Math.min(1, hub.mt / DUO.dur); hub.dustT -= dt; const emit = hub.dustT <= 0; if (emit) hub.dustT = 0.03;
+                [[A, 'da', duoA, 0], [B, 'db', duoB, 1]].forEach(([M, k, f, i]) => { const p = f(u), q = f(Math.min(1, u + 0.004)), j = poseMoto(M, k, u, p, q, 0), d = DUO.dir[i], bx = p[0] - d[0], bz = p[1] - d[1];
+                    jumpFx(k, j, p[0], p[1]); if (emit && !(j && j.ph === 1)) puff(bx, hgt(bx, bz), bz, 2); });
+                if (u >= 0.78 && !hub.opening) openPortals();
+                if (u >= 1) { A.visible = B.visible = false; hub.state = 'done'; }
+            }
+            if (hub.state === 'wait' && t > MOTO_DELAY) {       // 1) la moto SIN piloto pasa por detrás para llamar la atención
+                hub.state = 'a'; hub.mt = 0; hub.jf = {}; A.visible = true; motoSound(MOTO_A_TIME, u => 1 - 2 * u, u => 0.005 + 0.1 * Math.pow(Math.sin(Math.PI * u), 1.2), u => 70 + 80 * smooth(0, 0.45, u) - 95 * smooth(0.5, 1, u) + revUp(JUMPS.a, u));
+            }
+            if (hub.state === 'a') {
+                hub.mt += dt; const u = Math.min(1, hub.mt / MOTO_A_TIME), p = motoAAt(u), q = motoAAt(Math.min(1, u + 0.004)), j = poseMoto(A, 'a', u, p, q, Math.cos(u * 9) * 0.12);   // inclinación al doblar
+                jumpFx('a', j, p[0], p[1]); hub.dustT -= dt; if (hub.dustT <= 0 && !(j && j.ph === 1)) { hub.dustT = 0.04; puff(p[0] + 1.1, hgt(p[0] + 1.1, p[1]), p[1], 3); }
+                if (u >= 1) { A.visible = false; hub.state = 'gap'; hub.mt = 0; }
+            }
+            if (hub.state === 'gap') { hub.mt += dt; if (hub.mt > 1.2) {    // 2) entra la moto CON piloto y da una vuelta alrededor del usuario
+                hub.state = 'b'; hub.mt = 0; B.visible = true; motoSound(MOTO_B_TIME, u => Math.sin(motoBAt(u)[3]), u => 0.1 * smooth(0, 0.08, u) * (1 - smooth(0.92, 1, u)) * (0.5 + 0.5 * 9 / motoBAt(u)[2]), u => 95 + 20 * Math.sin(u * 28) + 30 * smooth(0, 0.3, u) + revUp(JUMPS.b, u)); } }
+            if (hub.state === 'b') {
+                hub.mt += dt; const u = Math.min(1, hub.mt / MOTO_B_TIME), p = motoBAt(u), q = motoBAt(Math.min(1, u + 0.004)), dx = q[0] - p[0], dz = q[1] - p[1], L = Math.hypot(dx, dz) || 1;
+                const j = poseMoto(B, 'b', u, p, q, -0.32 * cl((60 - p[2]) / 51, 0, 1));          // se inclina hacia el centro al girar
+                jumpFx('b', j, p[0], p[1]); hub.dustT -= dt; if (hub.dustT <= 0 && !(j && j.ph === 1)) { hub.dustT = 0.025; puff(p[0] - dx / L * 1.0, hgt(p[0], p[1]), p[1] - dz / L * 1.0, 3); }
+                if (u >= 0.85 && !hub.opening) openPortals();   // 3) suena la luciérnaga y se abren los portales
+                if (u >= 1) { B.visible = false; hub.state = 'done'; }
+            }
+            hub.dust.forEach(d => { const L = d.userData.life; if (L > 2.2) { d.material.opacity = 0; return; } d.userData.life += dt; d.position.addScaledVector(d.userData.v, dt); d.userData.v.y -= 0.25 * dt; d.scale.setScalar(d.userData.sz * (1 + L * 1.5)); d.material.opacity = 0.7 * Math.pow(1 - L / 2.2, 1.3); });
+            if (hub.opening) hub.ot += dt;
+            hub.hover = -1; const rays = [];
+            if (hub.opening && hub.ot > 3.4) {
+                if (renderer.xr.isPresenting) [0, 1].forEach(i => { const c = renderer.xr.getController(i); if (c.userData.src) rays.push([new THREE.Vector3().setFromMatrixPosition(c.matrixWorld), new THREE.Vector3(0, 0, -1).transformDirection(c.matrixWorld)]); });
+                else if (pointer.on) { raycaster.setFromCamera(pointer, camera); rays.push([raycaster.ray.origin.clone(), raycaster.ray.direction.clone()]); }
+                for (const [o, d] of rays) { raycaster.set(o, d); const h = raycaster.intersectObjects(hub.discs)[0]; if (h) { hub.hover = h.object.userData.i; break; } }
+                if (!renderer.xr.isPresenting) document.body.style.cursor = hub.hover >= 0 ? 'pointer' : 'default';
+                { const HP = HUB_PORTALS[hub.hover]; if (HP && HP.video && !HP.v) HP.v = mkVid(HP.video); }      // al apuntar un portal, su video empieza a bajar
+            }
+            hub.hint.material.opacity = 0;
+            hub.letters.forEach(L => { const m = L.m; if (!hub.opening) { L.st = 'off'; m.visible = false; return; }
+                if (L.st === 'stand') { const e = smooth(0, 0.45, hub.ot - L.i * 0.05); m.scale.setScalar(Math.max(e, 0.001)); m.position.set(L.x, hgt(L.x, L.z) + 0.45 + 0.04 * Math.sin(t * 3 + L.i), L.z); }
+                else if (L.st === 'fly') { L.v.y -= 22 * dt; m.position.addScaledVector(L.v, dt); m.rotation.x += L.w.x * dt; m.rotation.y += L.w.y * dt; m.rotation.z += L.w.z * dt; const gy = hgt(m.position.x, m.position.z);
+                    if (L.v.y < 0 && m.position.y < gy + 0.3) { L.st = 'stuck'; m.rotation.set((Math.random() - 0.5) * 2, Math.random() * 6.283, (Math.random() - 0.5) * 0.9); m.position.y = gy + 0.15 + Math.random() * 0.15; puff(m.position.x, gy, m.position.z, 2); clink(450 + Math.random() * 900, 0.03, m.position.x / 10); noise(0.05, 3200, 1400, 0.035, 0, m.position.x / 10); } } });
+            hub.U.uTime.value = t; hub.portals.forEach((p, i) => {
+                const q = hub.opening ? hub.ot - 1.7 - i * 0.35 : -1, FT = 0.85, H0 = 26, on = hub.hover === i;      // caen desde arriba con gravedad, se clavan y levantan polvo
+                p.uh.value += ((on ? 1 : 0) - p.uh.value) * Math.min(1, dt * 6); p.s += ((on ? 1.07 : 1) - p.s) * Math.min(1, dt * 8); p.g.visible = q > 0; if (q > 0 && !p.fell) { p.fell = true; noise(0.85, 3500, 400, 0.07, 0, p.px / 7, 'bandpass', 0.6); tone(900, 'sine', 0.02, 0.85, 200); } p.g.scale.set(p.s, p.s, 1);
+                if (q <= 0) { p.landed = false; p.fell = false; p.g.position.y = p.y0 + H0; return; }
+                if (q < FT) { const f = q / FT; p.g.position.y = p.y0 + H0 * (1 - f * f); p.g.rotation.z = 0.12 * (1 - f) * (i % 2 ? 1 : -1); }
+                else { const k = q - FT; p.g.position.y = p.y0 + 0.3 * Math.abs(Math.sin(k * 10)) * Math.exp(-k * 7) - 0.3 * smooth(0, 0.3, k); p.g.rotation.z = 0.07 * Math.sin(k * 16) * Math.exp(-k * 4.5) * (i % 2 ? 1 : -1);
+                    if (!p.landed) { p.landed = true; hub.scatter(p.px, p.pz); tone(95, 'sine', 0.35, 0.55, 38); tone(220, 'triangle', 0.08, 0.25, 90);
+                        { const pn = p.px / 7; noise(0.55, 2200, 140, 0.28, 0, pn, 'lowpass', 0.7); tone(52, 'sine', 0.3, 1.0, 26); clink(330, 0.07, pn); clink(590, 0.04, pn, 0.05);   // aplastón: impacto, subgrave y golpe metálico
+                          noise(0.9, 600, 80, 0.12, 0.18, pn, 'lowpass', 0.9); tone(78, 'sawtooth', 0.045, 0.9, 32, 0.15);                                                       // se entierra: derrumbe grave que se hunde
+                          for (let k = 0; k < 4; k++) noise(0.07, 3400, 1600, 0.05, 0.25 + k * 0.1 + Math.random() * 0.05, pn, 'bandpass', 1.2); }   // granos de arena cayendo
+                        for (let n = 0; n < 22; n++) { const d = hub.dust.find(z => z.userData.life > 2.2); if (!d) break; const an = Math.random() * 6.283, sp = 2.5 + Math.random() * 4; d.material.color.setHex(DUST_COLS[(Math.random() * 3) | 0]); d.position.set(p.px + Math.cos(an) * 0.6, p.y0 + 0.2, p.pz + Math.sin(an) * 0.6); d.userData.v.set(Math.cos(an) * sp, 0.5 + Math.random() * 1.6, Math.sin(an) * sp); d.userData.life = 0; d.userData.sz = 1.2 + Math.random() * 2.2; } } }
+                p.gl.material.opacity = smooth(0, 1.2, q - FT) * (0.45 + 0.12 * Math.sin(t * 2 + i)) * (on ? 1.5 : 1);
+            });
+        }
+        function init() {
+            hub.group = new THREE.Group(); hub.group.visible = false;
+            scene = new THREE.Scene(); scene.add(hub.group); camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.05, 30000); rig = new THREE.Group(); rig.add(camera); scene.add(rig);
+            renderer = new THREE.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight); renderer.outputEncoding = THREE.sRGBEncoding; renderer.xr.enabled = true; document.body.appendChild(renderer.domElement);
+            addEventListener('resize', () => { camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix(); renderer.setSize(innerWidth, innerHeight); });
+            renderer.domElement.addEventListener('pointermove', e => { pointer.x = e.clientX / innerWidth * 2 - 1; pointer.y = -(e.clientY / innerHeight) * 2 + 1; pointer.on = true; });
+            [0, 1].forEach(i => { const c = renderer.xr.getController(i); rig.add(c);
+                const ray = new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(), new THREE.Vector3(0, 0, -1)]), new THREE.LineBasicMaterial({ color: 0x66ccff, transparent: true, opacity: 0.6, fog: false })); ray.scale.z = 20; c.add(ray);
+                c.addEventListener('connected', e => { c.userData.src = e.data; }); c.addEventListener('selectstart', () => { if (faseVuelo === 'hub' || faseVuelo === 'v360') hubSelectRay(c); }); });
+            renderer.xr.addEventListener('sessionstart', dropBackCover); renderer.xr.addEventListener('sessionstart', enterHub); renderer.xr.addEventListener('sessionend', exitHub);
+            document.getElementById('vback').onclick = hubBack;
+            document.getElementById('enter-btn').onclick = () => { ensureAudio(); try { if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {}); } catch (e) {} enterHub(); };
+            if (navigator.xr) navigator.xr.isSessionSupported('immersive-vr').then(ok => { window.__xrSup = ok; if (!ok) { coverNoVR(); return; } const b = document.getElementById('vr-btn'); b.style.display = 'inline-block'; VR_OK = !WINDOW_MODE; if (VR_OK) { document.getElementById('enter-btn').style.display = 'none'; if (!VOLVER) b.textContent = 'ENTRAR'; } else dropBackCover(); if (VOLVER) { b.disabled = false; b.style.cssText += ';position:fixed;top:18px;right:18px;z-index:30;margin:0;padding:.8rem 1.4rem;border-radius:999px;cursor:pointer;background:rgba(0,255,255,.12);border:1px solid #0ff;color:#0ff;letter-spacing:.15em;font:600 .85rem Space Grotesk,sans-serif'; document.body.appendChild(b); }
+                b.onclick = async () => { ensureAudio(); const s = await navigator.xr.requestSession('immersive-vr', { optionalFeatures: ['local-floor', 'bounded-floor'] }); await renderer.xr.setSession(s); };
+                window.__enterVR = () => { if (!renderer.xr.isPresenting) b.onclick(); }; if (window.__sg) window.__enterVR(); }).catch(() => { window.__xrSup = 'error'; coverNoVR(); });      // llegada desde Nylon ya en VR: entra sin tocar nada
+            if (!navigator.xr) { window.__xrSup = 'sin navigator.xr'; coverNoVR(); }
+            buildMotos();      // se leen los modelos ahora (pantalla de entrada), no durante la secuencia
+            addEventListener('keydown', e => { const k = e.key === '1' ? 'a' : e.key === '2' ? 'b' : null; if (!k) return; MOTO_REVERSE[k] = !MOTO_REVERSE[k]; (k === 'a' ? hub.ia : hub.ib).rotation.y = MOTO_REVERSE[k] ? Math.PI : 0;      // prueba rápida: tecla 1 / 2 gira la moto A / B 180°
+                setSub('Moto ' + k.toUpperCase() + ' → dejá MOTO_REVERSE.' + k + ' = ' + MOTO_REVERSE[k]); setTimeout(() => setSub(''), 3500); });
+            try { document.fonts.load('700 64px "Space Grotesk"'); document.fonts.load('500 44px "Space Grotesk"'); } catch (e) {}
+        }
+        function animate() {
+            const dt = Math.min(clock.getDelta(), 0.1);
+            if (faseVuelo === 'hub' || faseVuelo === 'v360') { rig.position.copy(camPos); rig.rotation.set(0, yawFree, 0); if (!renderer.xr.isPresenting) camera.rotation.x = pitchFree; }
+            if (faseVuelo === 'v360' && renderer.xr.isPresenting) [0, 1].forEach(i => { const c = renderer.xr.getController(i), src = c.userData.src, ax = src && src.gamepad && src.gamepad.axes; if (!ax) return; const sx = ax.length > 2 ? ax[2] : ax[0]; if (Math.abs(sx) > 0.25) cinWake(); if (Math.abs(sx) > 0.75 && !c.userData.stk) { c.userData.stk = 1; cinAct(sx > 0 ? 'fwd' : 'rew'); } else if (Math.abs(sx) < 0.35) c.userData.stk = 0; });      // en VR el joystick gira la vista dentro del video (la cabeza sigue girando normal)
+            updateHub(dt); renderer.render(scene, camera);
+        }
+        window.onload = () => { init(); if (VOLVER) enterHub(); renderer.setAnimationLoop(animate); };
+    </script>
+</body>
+</html>
